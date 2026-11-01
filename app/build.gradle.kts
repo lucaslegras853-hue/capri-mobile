@@ -15,9 +15,24 @@ android {
         versionName = "0.4"
     }
 
+    // La même signature pour toutes les versions : sinon Android refuse de mettre l'appli à jour.
+    // (Clé perso pour une appli perso, pas pour le Play Store.)
+    signingConfigs {
+        create("capri") {
+            storeFile = file("capri.keystore")
+            storePassword = "caprimobile"
+            keyAlias = "capri"
+            keyPassword = "caprimobile"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("capri")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("capri")
         }
     }
     compileOptions {
