@@ -13,6 +13,7 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -24,10 +25,17 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.random.Random
 
-// Le service qui la fait vivre par-dessus les autres applis : sa fenêtre flottante, ses balades, ses bulles.
+// Le service qui la fait vivre par-dessus les autres applis.
+// Elle se tient sur un « rebord » : le bas de l'écran, le haut du clavier, d'un bouton, d'une icône ou d'un message
+// (trouvés par ses Yeux, le service d'accessibilité). Elle y marche, s'y assoit, saute de l'un à l'autre,
+// flotte dans les airs, se téléporte, danse quand de la musique joue, et réagit aux applis que tu ouvres.
 class CapriService : Service() {
+
+    private enum class Mode { STAND, WALK, SIT, JUMP, GLIDE, HOVER, FALL, DRAG, LEAVE, DANCE, SLEEP }
 
     private lateinit var windows: WindowManager
     private lateinit var prefs: Prefs
@@ -36,21 +44,38 @@ class CapriService : Service() {
     private lateinit var sprites: Sprites
     private lateinit var view: CompanionView
     private lateinit var params: WindowManager.LayoutParams
+    private lateinit var audio: AudioManager
     private var bubble: TextView? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
     private val main = Handler(Looper.getMainLooper())
 
     private var widthPx = 0
     private var heightPx = 0
-    private var walkTo = -1
-    private var falling = false
+    private var mode = Mode.STAND
+    // Ses pieds (debout) ou sa hanche (assise), en coordonnées d'écran.
+    private var footX = 0f
+    private var footY = 0f
+    private var ledge: Eyes.Ledge? = null
+    private var walkTo = 0f
+    private var fromX = 0f
+    private var fromY = 0f
+    private var toX = 0f
+    private var toY = 0f
+    private var toLedge: Eyes.Ledge? = null
+    private var moveStart = 0L
+    private var moveTime = 1L
+    private var arc = 0f
     private var fallSpeed = 0f
     private var lastTouch = System.currentTimeMillis()
-    private var nextWander = 0L
+    private var nextMove = 0L
     private var nextPop = 0L
     private var nextChatter = 0L
+    private var nextCheck = 0L
+    private var hoverUntil = 0L
     private var bubbleUntil = 0L
     private var thinking = false
+    private var reactedApp = ""
+    private var nextReaction = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -61,13 +86,15 @@ class CapriService : Service() {
         memory = Memory(this)
         brain = Brain(prefs, memory)
         sprites = Sprites(this)
+        audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         windows = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         startAsForeground()
         addCompanion()
         val now = System.currentTimeMillis()
-        nextWander = now + 8000
+        nextMove = now + 4000
         nextPop = now + minutes(3, 6)
         nextChatter = now + minutes(12, 25)
+        reactedApp = Eyes.app
         main.post(ticker)
         say(Lines.pick("wake"), 4000)
     }
@@ -89,8 +116,7 @@ class CapriService : Service() {
 
     private fun startAsForeground() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val channel = NotificationChannel("capri", "Capri", NotificationManager.IMPORTANCE_MIN)
-        manager.createNotificationChannel(channel)
+        manager.createNotificationChannel(NotificationChannel("capri", "Capri", NotificationManager.IMPORTANCE_MIN))
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val notification = Notification.Builder(this, "capri")
             .setContentTitle("Capri est là")
@@ -103,6 +129,8 @@ class CapriService : Service() {
         else startForeground(1, notification)
     }
 
+    // ---------- Sa fenêtre et le toucher ----------
+
     @SuppressLint("ClickableViewAccessibility")
     private fun addCompanion() {
         val metrics = resources.displayMetrics
@@ -114,18 +142,19 @@ class CapriService : Service() {
         params = WindowManager.LayoutParams(
             wide, tall,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         )
         params.gravity = Gravity.TOP or Gravity.START
-        params.x = widthPx - wide - dp(16)
-        params.y = floorY()
+        footX = widthPx - wide / 2f - dp(16)
+        footY = floorY()
+        place()
         windows.addView(view, params)
 
         var downX = 0f
         var downY = 0f
-        var startX = 0
-        var startY = 0
+        var grabX = 0f
+        var grabY = 0f
         var moved = false
         var lastTap = 0L
         val longPress = Runnable { if (!moved) openApp() }
@@ -133,7 +162,7 @@ class CapriService : Service() {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX; downY = event.rawY
-                    startX = params.x; startY = params.y
+                    grabX = footX; grabY = footY
                     moved = false
                     main.postDelayed(longPress, 650)
                     true
@@ -144,14 +173,14 @@ class CapriService : Service() {
                     if (!moved && abs(dx) + abs(dy) > dp(8)) {
                         moved = true
                         main.removeCallbacks(longPress)
-                        walkTo = -1
-                        falling = false
-                        view.play("dangle")
+                        if (mode == Mode.SIT) footY += params.height * 0.21f
+                        grabY = footY
+                        setMode(Mode.DRAG)
                     }
                     if (moved) {
-                        params.x = (startX + dx).toInt().coerceIn(-params.width / 2, widthPx - params.width / 2)
-                        params.y = (startY + dy).toInt().coerceIn(0, floorY())
-                        update()
+                        footX = (grabX + dx).coerceIn(0f, widthPx.toFloat())
+                        footY = (grabY + dy).coerceIn(params.height.toFloat(), floorY())
+                        place()
                     }
                     true
                 }
@@ -159,9 +188,9 @@ class CapriService : Service() {
                     main.removeCallbacks(longPress)
                     touched()
                     if (moved) {
-                        falling = params.y < floorY()
+                        ledge = null
                         fallSpeed = 0f
-                        if (!falling) view.play("idle")
+                        setMode(Mode.FALL)
                     } else if (event.actionMasked == MotionEvent.ACTION_UP) {
                         val now = System.currentTimeMillis()
                         if (now - lastTap < 350) {
@@ -179,22 +208,47 @@ class CapriService : Service() {
         }
     }
 
-    private fun floorY(): Int = heightPx - params.height - dp(24)
+    // Le « sol » : le bas de l'écran (au-dessus de la barre de navigation).
+    private fun floorY(): Float = (heightPx - dp(8)).toFloat()
 
-    private fun update() {
-        try { windows.updateViewLayout(view, params) } catch (e: Exception) { }
+    // Place sa fenêtre selon ses pieds (ou sa hanche si elle est assise).
+    private fun place() {
+        val w = params.width
+        val h = params.height
+        params.x = (footX - w / 2f).toInt()
+        params.y = if (mode == Mode.SIT) (footY - h * 0.79f).toInt() else (footY - h).toInt()
+        try { if (view.isAttachedToWindow) windows.updateViewLayout(view, params) } catch (e: Exception) { }
         placeBubble()
+    }
+
+    private fun setMode(next: Mode) {
+        val wasSitting = mode == Mode.SIT
+        mode = next
+        if (wasSitting && next != Mode.SIT) place()
+        view.play(
+            when (next) {
+                Mode.STAND, Mode.HOVER -> "idle"
+                Mode.WALK, Mode.GLIDE -> "walk"
+                Mode.SIT -> if (sprites.has("perch")) "perch" else "idle"
+                Mode.JUMP, Mode.FALL, Mode.DRAG -> "dangle"
+                Mode.LEAVE -> if (sprites.has("leave")) "leave" else "glitch"
+                Mode.DANCE -> if (sprites.has("dance")) "dance" else "grin"
+                Mode.SLEEP -> "sleep"
+            }
+        )
+        if (next == Mode.SIT) place()
     }
 
     private fun touched() {
         lastTouch = System.currentTimeMillis()
-        if (view.clipName == "sleep") view.play("wake")
+        if (mode == Mode.SLEEP) { setMode(Mode.STAND); view.play("wake") }
     }
 
-    // Toutes les 33 ms : son animation, sa marche, sa chute, et ce qu'elle décide de faire.
+    // ---------- La boucle (33 ms) ----------
+
     private val ticker = object : Runnable {
         override fun run() {
-            step()
+            try { step() } catch (e: Exception) { }
             view.invalidate()
             main.postDelayed(this, 33)
         }
@@ -202,50 +256,81 @@ class CapriService : Service() {
 
     private fun step() {
         val now = System.currentTimeMillis()
-        if (falling) {
-            fallSpeed += dp(1) * 1.6f
-            params.y = (params.y + fallSpeed).toInt()
-            if (params.y >= floorY()) {
-                params.y = floorY()
-                falling = false
-                view.squash = 0.8f
-                view.play("idle")
-                if (fallSpeed > dp(20) && prefs.popIns) say(Lines.pick("drop"), 3000)
-            }
-            update()
-        }
+        val h = params.height.toFloat()
+        val w = params.width.toFloat()
         if (view.squash < 1f) view.squash = (view.squash + 0.03f).coerceAtMost(1f)
-        if (walkTo >= 0) {
-            val gap = walkTo - params.x
-            val speed = dp(2)
-            if (abs(gap) <= speed) {
-                params.x = walkTo
-                walkTo = -1
-                view.play("idle")
-            } else {
-                params.x += if (gap > 0) speed else -speed
-                view.facingLeft = gap < 0
+        when (mode) {
+            Mode.WALK -> {
+                val gap = walkTo - footX
+                val speed = dp(2).toFloat()
+                if (abs(gap) <= speed) { footX = walkTo; setMode(Mode.STAND) } else { footX += if (gap > 0) speed else -speed; view.facingLeft = gap < 0 }
+                place()
             }
-            update()
+            Mode.JUMP, Mode.GLIDE -> {
+                val p = min(1f, (now - moveStart).toFloat() / moveTime)
+                val eased = if (mode == Mode.GLIDE) p * p * (3 - 2 * p) else p
+                footX = fromX + (toX - fromX) * eased
+                footY = fromY + (toY - fromY) * eased - (if (mode == Mode.JUMP) 4 * arc * p * (1 - p) else 0f)
+                place()
+                if (p >= 1f) {
+                    if (mode == Mode.JUMP) land(toLedge)
+                    else { setMode(Mode.HOVER); hoverUntil = now + 3000 + Random.nextLong(6000) }
+                }
+            }
+            Mode.HOVER -> if (now > hoverUntil) { fallSpeed = 0f; setMode(Mode.FALL) }
+            Mode.FALL, Mode.DRAG -> if (mode == Mode.FALL) {
+                fallSpeed += dp(1) * 1.6f
+                val below = ledgeBelow(footX, footY, footY + fallSpeed)
+                val stop = below?.top?.toFloat() ?: floorY()
+                if (footY + fallSpeed >= stop) {
+                    footY = stop
+                    if (fallSpeed > dp(20) && prefs.popIns && bubble == null && Random.nextInt(3) == 0) say(Lines.pick("drop"), 3000)
+                    land(below)
+                } else footY += fallSpeed
+                place()
+            }
+            Mode.LEAVE -> if (view.finished()) {
+                // Elle réapparaît ailleurs.
+                val spot = randomSpot(w)
+                ledge = spot.second
+                footX = spot.first
+                footY = spot.second?.top?.toFloat() ?: floorY()
+                setMode(Mode.STAND)
+                if (sprites.has("arrive")) view.play("arrive")
+                place()
+            }
+            else -> {}
         }
-        if (view.finished()) view.play(if (view.clipName == "blink" || view.clipName == "wake" || view.clipName == "grin" || view.clipName == "glitch") "idle" else view.clipName)
+        if (view.finished()) view.play(
+            when (mode) {
+                Mode.SIT -> if (sprites.has("perch")) "perch" else "idle"
+                Mode.SLEEP -> "sleep"
+                Mode.DANCE -> if (sprites.has("dance")) "dance" else "grin"
+                else -> "idle"
+            }
+        )
         if (bubble != null && now > bubbleUntil && !thinking) hideBubble()
 
-        val idleFor = now - lastTouch
-        if (view.clipName != "sleep" && idleFor > 10 * 60_000L && walkTo < 0 && !falling) { view.play("sleep"); return }
-        if (view.clipName == "sleep") return
-        if (now >= nextWander && walkTo < 0 && !falling && view.clipName == "idle") {
-            nextWander = now + 15_000L + Random.nextLong(30_000L)
-            val roll = Random.nextDouble()
-            when {
-                roll < 0.55 -> {
-                    walkTo = Random.nextInt(0, (widthPx - params.width).coerceAtLeast(1))
-                    view.play("walk")
-                }
-                roll < 0.7 -> view.play("glitch")
-                roll < 0.85 -> view.play("grin")
-                else -> view.play("blink")
+        // Toutes les 300 ms : son rebord existe-t-il encore ? de la musique ? une nouvelle appli ?
+        if (now >= nextCheck) {
+            nextCheck = now + 300
+            val on = ledge
+            if ((mode == Mode.STAND || mode == Mode.WALK || mode == Mode.SIT || mode == Mode.DANCE) && on != null && !stillThere(on)) {
+                ledge = null
+                fallSpeed = 0f
+                setMode(Mode.FALL)
             }
+            val music = try { audio.isMusicActive } catch (e: Exception) { false }
+            if (music && (mode == Mode.STAND || mode == Mode.SIT) && sprites.has("dance")) setMode(Mode.DANCE)
+            if (!music && mode == Mode.DANCE) setMode(Mode.STAND)
+            react(now)
+        }
+
+        if (mode != Mode.SLEEP && now - lastTouch > 10 * 60_000L && (mode == Mode.STAND || mode == Mode.SIT)) { setMode(Mode.SLEEP); return }
+        if (mode == Mode.SLEEP) return
+        if (now >= nextMove && (mode == Mode.STAND || mode == Mode.SIT)) {
+            nextMove = now + 6_000L + Random.nextLong(9_000L)
+            decide(now, w, h)
         }
         if (prefs.popIns && now >= nextPop && bubble == null) {
             nextPop = now + minutes(4, 9)
@@ -263,10 +348,113 @@ class CapriService : Service() {
         }
     }
 
+    // Ce qu'elle décide de faire ensuite.
+    private fun decide(now: Long, w: Float, h: Float) {
+        val roll = Random.nextDouble()
+        val on = ledge
+        val left = (on?.left?.toFloat() ?: 0f) + w * 0.35f
+        val right = (on?.right?.toFloat() ?: widthPx.toFloat()) - w * 0.35f
+        when {
+            roll < 0.28 && right - left > w * 0.5f -> {
+                if (mode == Mode.SIT) setMode(Mode.STAND)
+                walkTo = left + Random.nextFloat() * (right - left)
+                setMode(Mode.WALK)
+            }
+            roll < 0.55 -> jump(randomSpot(w))
+            roll < 0.68 -> glide()
+            roll < 0.76 -> setMode(Mode.LEAVE)
+            roll < 0.88 && mode == Mode.STAND && sprites.has("perch") -> setMode(Mode.SIT)
+            roll < 0.94 -> view.play("grin")
+            else -> view.play(if (Random.nextBoolean()) "glitch" else "blink")
+        }
+    }
+
+    // Un endroit au hasard où atterrir : un rebord trouvé par ses Yeux, ou le sol.
+    private fun randomSpot(w: Float): Pair<Float, Eyes.Ledge?> {
+        val options = usableLedges(w)
+        if (options.isNotEmpty() && Random.nextDouble() < 0.85) {
+            val pick = options.random()
+            val x = pick.left + w * 0.35f + Random.nextFloat() * max(1f, pick.right - pick.left - w * 0.7f)
+            return Pair(x, pick)
+        }
+        return Pair(w / 2 + Random.nextFloat() * (widthPx - w), null)
+    }
+
+    private fun usableLedges(w: Float): List<Eyes.Ledge> {
+        val h = params.height
+        val top = dp(40)
+        return Eyes.ledges.filter { it.right - it.left >= w * 0.7f && it.top - h * 0.8f > top && it.top < floorY() - dp(20) }
+    }
+
+    private fun stillThere(on: Eyes.Ledge): Boolean {
+        if (!Eyes.running) return true
+        return Eyes.ledges.any { abs(it.top - on.top) <= dp(6) && it.left <= footX && it.right >= footX }
+    }
+
+    private fun ledgeBelow(x: Float, from: Float, to: Float): Eyes.Ledge? {
+        var best: Eyes.Ledge? = null
+        for (candidate in usableLedges(params.width.toFloat())) {
+            if (x < candidate.left || x > candidate.right) continue
+            if (candidate.top < from || candidate.top > to) continue
+            if (best == null || candidate.top < best.top) best = candidate
+        }
+        return best
+    }
+
+    private fun jump(spot: Pair<Float, Eyes.Ledge?>) {
+        if (mode == Mode.SIT) setMode(Mode.STAND)
+        fromX = footX; fromY = footY
+        toX = spot.first
+        toY = spot.second?.top?.toFloat() ?: floorY()
+        toLedge = spot.second
+        val distance = abs(toX - fromX) + abs(toY - fromY)
+        if (distance < dp(30)) return
+        moveStart = System.currentTimeMillis()
+        moveTime = (500 + distance / dp(1) * 1.5f).toLong().coerceIn(600, 1400)
+        arc = if (toY < fromY) (fromY - toY) + dp(60) else dp(70).toFloat()
+        view.facingLeft = toX < fromX
+        setMode(Mode.JUMP)
+    }
+
+    private fun glide() {
+        if (mode == Mode.SIT) setMode(Mode.STAND)
+        val h = params.height
+        fromX = footX; fromY = footY
+        toX = params.width / 2f + Random.nextFloat() * (widthPx - params.width)
+        toY = h + dp(40) + Random.nextFloat() * max(1f, floorY() - h - dp(120))
+        moveStart = System.currentTimeMillis()
+        moveTime = ((abs(toX - fromX) + abs(toY - fromY)) / dp(1) * 9f).toLong().coerceIn(1500, 7000)
+        view.facingLeft = toX < fromX
+        ledge = null
+        setMode(Mode.GLIDE)
+    }
+
+    private fun land(on: Eyes.Ledge?) {
+        ledge = on
+        footY = on?.top?.toFloat() ?: floorY()
+        view.squash = 0.8f
+        setMode(if (on != null && !on.keyboard && sprites.has("perch") && Random.nextDouble() < 0.5) Mode.SIT else Mode.STAND)
+        place()
+    }
+
+    // Elle réagit quand tu ouvres une nouvelle appli ou un jeu (une fois qu'il est resté 12 secondes devant).
+    private fun react(now: Long) {
+        val app = Eyes.app
+        if (app.isEmpty() || app == reactedApp || now - Eyes.appSince < 12_000 || now < nextReaction) return
+        if (!prefs.chatter || prefs.key.isEmpty() || thinking || bubble != null) return
+        reactedApp = app
+        if (Random.nextDouble() > 0.7) return
+        nextReaction = now + 4 * 60_000L
+        val label = try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(app, 0)).toString() } catch (e: Exception) { app }
+        ask("(Il vient d'ouvrir l'appli « $label » sur son téléphone. Réagis en une phrase courte, comme une amie : une remarque, une taquinerie ou une question. Sers-toi de tes souvenirs si ça colle.)", quiet = true)
+    }
+
     private fun petted() {
         view.play("grin")
         say(Lines.pick("pet"), 3500)
     }
+
+    // ---------- Parler ----------
 
     // Une question à son cerveau, en arrière-plan ; la réponse s'affiche dans sa bulle.
     fun ask(text: String, quiet: Boolean = false, done: ((String?, String?) -> Unit)? = null) {
@@ -315,7 +503,7 @@ class CapriService : Service() {
             val layout = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             )
             layout.gravity = Gravity.TOP or Gravity.START
@@ -337,7 +525,7 @@ class CapriService : Service() {
         val w = shown.measuredWidth
         val h = shown.measuredHeight
         layout.x = (params.x + params.width / 2 - w / 2).coerceIn(dp(8), (widthPx - w - dp(8)).coerceAtLeast(dp(8)))
-        layout.y = (params.y - h - dp(4)).coerceAtLeast(dp(24))
+        layout.y = if (params.y - h - dp(4) > dp(24)) params.y - h - dp(4) else params.y + params.height + dp(4)
         if (shown.isAttachedToWindow) try { windows.updateViewLayout(shown, layout) } catch (e: Exception) { }
     }
 

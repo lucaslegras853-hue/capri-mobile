@@ -8,8 +8,7 @@
     </style>
     <style name="Theme.Capri.Chat" parent="android:Theme.Material.NoActionBar">
         <item name="android:colorAccent">#3AD6EB</item>
-        <item name="android:windowBackground">#F00B0D12</item>
-        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">#0B0D12</item>
         <item name="android:statusBarColor">#0B0D12</item>
         <item name="android:navigationBarColor">#0B0D12</item>
     </style>

@@ -87,6 +87,18 @@ class MainActivity : Activity() {
         root.addView(chatter)
         root.addView(remember)
 
+        root.addView(button("Tester la clé") {
+            prefs.key = key.text.toString()
+            Toast.makeText(this, "Test en cours...", Toast.LENGTH_SHORT).show()
+            Thread {
+                val problem = Brain(prefs, Memory(this)).testKey()
+                runOnUiThread {
+                    AlertDialog.Builder(this).setTitle("Clé NVIDIA")
+                        .setMessage(problem ?: "La clé marche ! Capri peut parler.")
+                        .setPositiveButton("OK", null).show()
+                }
+            }.start()
+        })
         root.addView(button("Enregistrer") {
             prefs.key = key.text.toString()
             prefs.model = model.text.toString()
@@ -108,8 +120,14 @@ class MainActivity : Activity() {
             })
         }
 
+        root.addView(button("3. Activer ses yeux (accessibilité)") {
+            AlertDialog.Builder(this).setTitle("Ses yeux")
+                .setMessage("Pour qu'elle marche et s'assoie sur tes boutons, icônes, messages et sur le clavier, et qu'elle réagisse aux applis que tu ouvres, active « Capri (voir l'écran) » dans l'accessibilité. Elle ne lit pas le texte de tes écrans : seulement où sont les choses. Sur Xiaomi : Accessibilité > Applis téléchargées > Capri.")
+                .setPositiveButton("Ouvrir") { _, _ -> startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                .setNegativeButton("Annuler", null).show()
+        })
         root.addView(label("Animations"))
-        root.addView(label("Sans animations importées, elle apparaît en petit robot néon. Pour mettre les tiennes, choisis les fichiers PNG : idle, blink, walk, sleep, grin, glitch, dangle, wake."))
+        root.addView(label("Sans animations importées, elle apparaît en petit robot néon. Pour mettre les tiennes, choisis tes fichiers PNG : idle, blink, walk, sleep, grin, glitch, dangle, wake, et en plus perch (assise), dance, arrive et leave (téléportation)."))
         root.addView(button("Importer les animations (PNG)") { pickSprites() })
         root.addView(button("Retirer les animations importées") {
             File(filesDir, "sprites").deleteRecursively()
@@ -150,6 +168,7 @@ class MainActivity : Activity() {
         status.text = (if (running) "● Capri est lancée" else "○ Capri est arrêtée") +
             (if (!overlay) "\n⚠ Autorise l'affichage par-dessus les applis" else "") +
             (if (prefs.key.isEmpty()) "\n⚠ Colle ta clé NVIDIA pour qu'elle puisse parler" else "") +
+            (if (!Eyes.running) "\n⚠ Active ses yeux pour qu'elle aille sur tes boutons" else "\nSes yeux sont actifs") +
             (if (sprites) "\nAnimations importées" else "\nAnimations : robot néon par défaut")
     }
 
@@ -181,7 +200,7 @@ class MainActivity : Activity() {
         else data.data?.let { uris.add(it) }
         val folder = File(filesDir, "sprites")
         folder.mkdirs()
-        val wanted = setOf("idle", "blink", "walk", "sleep", "grin", "glitch", "dangle", "wake")
+        val wanted = Sprites(this).names
         var copied = 0
         for (uri in uris) {
             val name = displayName(uri)?.lowercase() ?: continue

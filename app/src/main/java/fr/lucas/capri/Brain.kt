@@ -8,6 +8,17 @@ import java.net.URL
 // Son cerveau : l'API NVIDIA (gratuite avec une clé de build.nvidia.com), compatible OpenAI.
 class Brain(private val prefs: Prefs, private val memory: Memory) {
 
+    companion object {
+        // D'autres modèles gratuits à essayer si le sien ne marche pas avec sa clé.
+        val FALLBACKS = listOf(
+            "nvidia/nemotron-3.5-super-vl-120b-a12b",
+            "nvidia/nemotron-3.5-bolt-e4b",
+            "openai/gpt-oss-20b",
+            "meta/llama-3.3-70b-instruct",
+            "meta/llama-3.1-8b-instruct",
+        )
+    }
+
     private fun persona(): String {
         val name = prefs.nickname
         val called = if (name.isNotEmpty()) "\nIl aime que tu l'appelles $name, de temps en temps, pas à chaque réponse." else ""
@@ -58,8 +69,48 @@ class Brain(private val prefs: Prefs, private val memory: Memory) {
         if (result.length > 20) memory.folded(result)
     }
 
+    // Vérifie la clé : true si NVIDIA l'accepte. Sinon, le message d'erreur du serveur.
+    fun testKey(): String? {
+        val key = cleanKey()
+        if (key.isEmpty()) return "Pas de clé."
+        val connection = URL("https://integrate.api.nvidia.com/v1/models").openConnection() as HttpURLConnection
+        return try {
+            connection.connectTimeout = 15000
+            connection.readTimeout = 20000
+            connection.setRequestProperty("Authorization", "Bearer $key")
+            val code = connection.responseCode
+            if (code in 200..299) null
+            else "Erreur $code : " + (connection.errorStream?.bufferedReader()?.use { it.readText() }?.take(160) ?: "")
+        } catch (e: Exception) {
+            "Pas de connexion : ${e.message}"
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    // La clé telle qu'il l'a collée, sans espaces, guillemets ni « Bearer » devant.
+    private fun cleanKey(): String = prefs.key.trim().removePrefix("Bearer ").trim().trim('"', '\'', ' ')
+
+    // Essaie son modèle, puis d'autres modèles gratuits si celui-là n'est pas disponible avec la clé.
     private fun call(messages: JSONArray, limit: Int): String {
-        val key = prefs.key
+        val tried = linkedSetOf(prefs.model) + FALLBACKS
+        var last: Exception? = null
+        for (model in tried) {
+            try {
+                val answer = callModel(messages, limit, model)
+                if (model != prefs.model) prefs.model = model
+                return answer
+            } catch (e: ModelProblem) {
+                last = e
+            }
+        }
+        throw IllegalStateException(last?.message ?: "Aucun modèle n'a répondu.")
+    }
+
+    private class ModelProblem(message: String) : Exception(message)
+
+    private fun callModel(messages: JSONArray, limit: Int, model: String): String {
+        val key = cleanKey()
         if (key.isEmpty()) throw IllegalStateException("Pas de clé NVIDIA. Ouvre l'appli et colle ta clé.")
         val connection = URL("https://integrate.api.nvidia.com/v1/chat/completions").openConnection() as HttpURLConnection
         try {
@@ -71,7 +122,7 @@ class Brain(private val prefs: Prefs, private val memory: Memory) {
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("Authorization", "Bearer $key")
             val body = JSONObject()
-                .put("model", prefs.model)
+                .put("model", model)
                 .put("messages", messages)
                 .put("max_tokens", limit)
                 .put("temperature", 0.85)
@@ -80,14 +131,13 @@ class Brain(private val prefs: Prefs, private val memory: Memory) {
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
             if (code !in 200..299) {
-                throw IllegalStateException(
-                    when (code) {
-                        401, 403 -> "Clé NVIDIA refusée. Vérifie-la dans l'appli."
-                        404 -> "Ce modèle n'existe pas avec ta clé. Change-le dans l'appli."
-                        429 -> "Trop de demandes. Attends une minute."
-                        else -> "Erreur $code du serveur NVIDIA."
-                    }
-                )
+                val detail = text.take(140)
+                when (code) {
+                    401 -> throw IllegalStateException("Clé NVIDIA refusée (401). Recrée une clé sur build.nvidia.com et colle-la. $detail")
+                    403, 404, 400, 410, 422, 500, 502, 503 -> throw ModelProblem("Le modèle $model ne répond pas (erreur $code). $detail")
+                    429 -> throw IllegalStateException("Trop de demandes. Attends une minute.")
+                    else -> throw IllegalStateException("Erreur $code du serveur NVIDIA. $detail")
+                }
             }
             val message = JSONObject(text).getJSONArray("choices").getJSONObject(0).getJSONObject("message")
             var content = if (message.isNull("content")) "" else message.optString("content", "")

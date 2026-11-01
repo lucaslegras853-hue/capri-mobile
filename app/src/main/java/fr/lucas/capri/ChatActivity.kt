@@ -10,6 +10,8 @@ import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.ViewGroup
+import android.view.WindowInsets
+import android.os.Build
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
@@ -62,6 +64,15 @@ class ChatActivity : Activity() {
         row.addView(send)
         root.addView(row)
         setContentView(root)
+        // Android 15 dessine sous le clavier et les barres : on décale nous-mêmes pour que la case reste visible.
+        if (Build.VERSION.SDK_INT >= 30) {
+            root.setOnApplyWindowInsetsListener { v, insets ->
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                val keyboard = insets.getInsets(WindowInsets.Type.ime())
+                v.setPadding(dp(12), bars.top + dp(12), dp(12), maxOf(bars.bottom, keyboard.bottom) + dp(8))
+                insets
+            }
+        }
 
         for (line in memory.history()) if (!line.text.startsWith("(")) addLine(line.role == "user", line.text)
         send.setOnClickListener { sendMessage() }

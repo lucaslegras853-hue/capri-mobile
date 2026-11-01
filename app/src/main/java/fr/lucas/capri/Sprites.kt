@@ -20,7 +20,14 @@ class Sprites(context: Context) {
         "glitch" to Clip("glitch", 10, 15.0, false),
         "dangle" to Clip("dangle", 24, 10.0, true),
         "wake" to Clip("wake", 13, 15.0, false),
+        "perch" to Clip("perch", 60, 30.0, true),
+        "dance" to Clip("dance", 16, 12.0, true),
+        "arrive" to Clip("arrive", 14, 15.0, false),
+        "leave" to Clip("leave", 12, 15.0, false),
     )
+
+    // Les noms de fichiers qu'il peut importer.
+    val names: Set<String> get() = clips.keys
 
     val folder = File(context.filesDir, "sprites")
     private val loaded = HashMap<String, Bitmap?>()

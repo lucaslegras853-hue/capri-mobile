@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Capri</string>
+    <string name="eyes_name">Capri (voir l\'écran)</string>
+    <string name="eyes_description">Permet à Capri de savoir où sont les boutons, les icônes, les messages et le clavier à l\'écran pour marcher et s\'asseoir dessus, et quelle appli est ouverte pour réagir. Elle ne lit pas le texte de tes écrans et rien n\'est envoyé ailleurs.</string>
 </resources>
