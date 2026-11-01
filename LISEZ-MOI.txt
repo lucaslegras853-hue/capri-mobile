@@ -1,0 +1,38 @@
+CAPRI MOBILE - appli Android perso de Lucas (version 0.1)
+=========================================================
+
+Ce qu'elle fait :
+- Elle flotte par-dessus tes autres applis, se balade en bas de l'écran,
+  glitche, sourit, s'endort quand tu ne la touches plus pendant 10 minutes.
+- Toucher : ouvrir le chat. Double-toucher : la caresser.
+  La glisser : la déplacer (lâchée en l'air, elle retombe).
+  Appui long : les réglages.
+- Elle parle en français grâce à ta clé NVIDIA gratuite, avec sa personnalité.
+- Elle se souvient de vos discussions (fichier souvenirs.md sur le téléphone),
+  te pose des questions et lance la conversation d'elle-même de temps en temps.
+- Des milliers de petites phrases toutes faites quand elle surgit.
+
+Les animations :
+Par défaut elle apparaît en petit robot néon. Pour mettre tes propres
+animations, copie sur ton téléphone ces fichiers PNG (même nom, même format :
+une bande d'images de gauche à droite) puis utilise "Importer les animations" :
+  idle.png (16 images), blink.png (4), walk.png (12), sleep.png (16),
+  grin.png (16), glitch.png (10), dangle.png (24), wake.png (13)
+Ce sont les mêmes noms que dans le dossier assets/sprites de Capri FR.
+
+Construire et installer :
+1. Installe Android Studio (gratuit) : developer.android.com/studio
+2. Ouvre ce dossier (capri-android) avec "Open". Laisse Android Studio
+   télécharger ce qu'il faut (Gradle, SDK). S'il propose de mettre à jour
+   le plugin Android Gradle, tu peux accepter.
+3. Sur ton téléphone : Paramètres > À propos > appuie 7 fois sur
+   "Numéro de build" (ou "Version MIUI") pour activer le mode développeur,
+   puis active "Débogage USB" dans les options pour développeurs.
+4. Branche le téléphone en USB, choisis-le en haut d'Android Studio,
+   et clique sur le bouton Play vert (Run).
+5. Dans l'appli : colle ta clé NVIDIA, Enregistrer, autorise l'affichage
+   par-dessus les applis (et les notifications), puis "Lancer Capri".
+
+Sur les téléphones Xiaomi/Redmi : autorise aussi "Afficher les fenêtres
+pop-up en arrière-plan" et retire les restrictions de batterie pour l'appli,
+sinon MIUI peut la cacher ou l'arrêter.
