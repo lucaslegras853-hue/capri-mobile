@@ -127,7 +127,7 @@ class MainActivity : Activity() {
                 .setNegativeButton("Annuler", null).show()
         })
         root.addView(label("Animations"))
-        root.addView(label("Sans animations importées, elle apparaît en petit robot néon. Pour mettre les tiennes, choisis tes fichiers PNG : idle, blink, walk, sleep, grin, glitch, dangle, wake, et en plus perch (assise), dance, arrive et leave (téléportation)."))
+        root.addView(label("Sans animations importées, elle apparaît en petit robot néon. Pour mettre les tiennes, sélectionne tout le dossier sprites : l'appli garde les fichiers qu'elle sait utiliser (debout, assise, allongée, bouche, visage, versions _flipped) et ignore le reste."))
         root.addView(button("Importer les animations (PNG)") { pickSprites() })
         root.addView(button("Retirer les animations importées") {
             File(filesDir, "sprites").deleteRecursively()

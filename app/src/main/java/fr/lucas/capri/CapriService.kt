@@ -564,7 +564,7 @@ class CapriService : Service() {
             // Son visage (face.png, s'il est importé) à gauche de la bulle.
             val face = if (sprites.has("face")) sprites.strip("face", keep = view.clipName) else null
             if (face != null) {
-                val icon = android.graphics.drawable.BitmapDrawable(resources, face)
+                val icon = android.graphics.drawable.BitmapDrawable(resources, android.graphics.Bitmap.createScaledBitmap(face, dp(32), dp(32), true))
                 icon.setBounds(0, 0, dp(32), dp(32))
                 shown.setCompoundDrawables(icon, null, null, null)
                 shown.compoundDrawablePadding = dp(8)

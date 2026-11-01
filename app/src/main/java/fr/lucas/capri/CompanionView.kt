@@ -53,7 +53,8 @@ class CompanionView(context: Context, private val sprites: Sprites) : View(conte
         // Tournée vers la gauche : la version dessinée par l'artiste si elle est là, sinon l'image retournée.
         val usable = if (sprites.has(clipName)) clip else sprites.clips.getValue("idle")
         val flipped = facingLeft && sprites.has(usable.name + "_flipped")
-        val strip = sprites.strip(if (flipped) usable.name + "_flipped" else usable.name) ?: return
+        val stripName = if (flipped) usable.name + "_flipped" else usable.name
+        val strip = sprites.strip(stripName) ?: return
         canvas.save()
         canvas.scale(if (facingLeft && !flipped) -1f else 1f, squash, width / 2f, height.toFloat())
         val cell = strip.width / usable.frames
@@ -66,7 +67,7 @@ class CompanionView(context: Context, private val sprites: Sprites) : View(conte
         dst.set((width - wide) / 2f, height - tall, (width + wide) / 2f, height.toFloat())
         canvas.drawBitmap(strip, src, dst, paint)
         if (talking && usable.pose == Sprites.Pose.STAND && (usable.name == "idle" || usable.name == "blink") && sprites.has("mouth")) {
-            val mouth = sprites.strip("mouth", keep = usable.name)
+            val mouth = sprites.strip("mouth", keep = stripName)
             if (mouth != null) {
                 val mouthCell = mouth.width / 5
                 val mouthFrame = ((System.nanoTime() / 1e9) * 12).toInt() % 5
