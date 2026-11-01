@@ -35,7 +35,7 @@ import kotlin.random.Random
 // flotte dans les airs, se téléporte, danse quand de la musique joue, et réagit aux applis que tu ouvres.
 class CapriService : Service() {
 
-    private enum class Mode { STAND, WALK, SIT, JUMP, GLIDE, HOVER, FALL, DRAG, LEAVE, DANCE, SLEEP }
+    private enum class Mode { STAND, WALK, SIT, LIE, JUMP, GLIDE, HOVER, FALL, DRAG, LEAVE, DANCE, SLEEP }
 
     private lateinit var windows: WindowManager
     private lateinit var prefs: Prefs
@@ -76,6 +76,12 @@ class CapriService : Service() {
     private var thinking = false
     private var reactedApp = ""
     private var nextReaction = 0L
+    private var baseWide = 0
+    private var sitSince = 0L
+    private var lieUntil = 0L
+    private var nextBlink = 0L
+    // Avant de danser ou de dormir : assise ou allongée, pour garder la même posture.
+    private var restPose = Mode.STAND
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -138,6 +144,7 @@ class CapriService : Service() {
         heightPx = metrics.heightPixels
         val tall = dp(prefs.size)
         val wide = (tall * 0.75f).toInt()
+        baseWide = wide
         view = CompanionView(this, sprites)
         params = WindowManager.LayoutParams(
             wide, tall,
@@ -173,7 +180,7 @@ class CapriService : Service() {
                     if (!moved && abs(dx) + abs(dy) > dp(8)) {
                         moved = true
                         main.removeCallbacks(longPress)
-                        if (mode == Mode.SIT) footY += params.height * 0.21f
+                        if (pose() == Sprites.Pose.PERCH) footY += params.height * 0.21f
                         grabY = footY
                         setMode(Mode.DRAG)
                     }
@@ -212,31 +219,71 @@ class CapriService : Service() {
     private fun floorY(): Float = (heightPx - dp(8)).toFloat()
 
     // Place sa fenêtre selon ses pieds (ou sa hanche si elle est assise).
+    // Sa posture actuelle : debout, assise (perch) ou allongée (laydown).
+    private fun pose(): Sprites.Pose {
+        val shown = sprites.clips[view.clipName]?.pose
+        if (shown == Sprites.Pose.PERCH && sprites.has(view.clipName)) return Sprites.Pose.PERCH
+        if (shown == Sprites.Pose.LIE && sprites.has(view.clipName)) return Sprites.Pose.LIE
+        return Sprites.Pose.STAND
+    }
+
     private fun place() {
-        val w = params.width
         val h = params.height
+        val lying = pose() == Sprites.Pose.LIE
+        val w = if (lying) (h * 1.05f).toInt() else baseWide
+        if (params.width != w) params.width = w
         params.x = (footX - w / 2f).toInt()
-        params.y = if (mode == Mode.SIT) (footY - h * 0.79f).toInt() else (footY - h).toInt()
+        params.y = if (pose() == Sprites.Pose.PERCH) (footY - h * 0.79f).toInt() else (footY - h).toInt()
         try { if (view.isAttachedToWindow) windows.updateViewLayout(view, params) } catch (e: Exception) { }
         placeBubble()
     }
 
     private fun setMode(next: Mode) {
-        val wasSitting = mode == Mode.SIT
+        val was = mode
+        if (next == Mode.DANCE || next == Mode.SLEEP) restPose = if (was == Mode.SIT || was == Mode.LIE) was else if (was == Mode.DANCE || was == Mode.SLEEP) restPose else Mode.STAND
+        if (next == Mode.SIT && was != Mode.SIT) sitSince = System.currentTimeMillis()
         mode = next
-        if (wasSitting && next != Mode.SIT) place()
         view.play(
             when (next) {
-                Mode.STAND, Mode.HOVER -> "idle"
-                Mode.WALK, Mode.GLIDE -> "walk"
-                Mode.SIT -> if (sprites.has("perch")) "perch" else "idle"
-                Mode.JUMP, Mode.FALL, Mode.DRAG -> "dangle"
-                Mode.LEAVE -> if (sprites.has("leave")) "leave" else "glitch"
-                Mode.DANCE -> if (sprites.has("dance")) "dance" else "grin"
-                Mode.SLEEP -> "sleep"
+                Mode.LEAVE -> when {
+                    was == Mode.SIT && sprites.has("perch_leave") -> "perch_leave"
+                    was == Mode.LIE && sprites.has("laydown_leave") -> "laydown_leave"
+                    sprites.has("leave") -> "leave"
+                    else -> "glitch"
+                }
+                else -> loopClip()
             }
         )
-        if (next == Mode.SIT) place()
+        place()
+    }
+
+    private fun pick(vararg names: String): String = names.firstOrNull { sprites.has(it) } ?: names.last()
+
+    // L'animation en boucle qui va avec ce qu'elle fait (et avec le fait qu'elle parle).
+    private fun loopClip(): String {
+        val talking = bubble != null
+        return when (mode) {
+            Mode.STAND, Mode.HOVER -> "idle"
+            Mode.WALK, Mode.GLIDE -> "walk"
+            Mode.SIT -> if (talking) pick("perch_talk", "perch", "idle") else pick("perch", "idle")
+            Mode.LIE -> if (talking) pick("laydown_talk", "laydown", "perch", "idle") else pick("laydown", "perch", "idle")
+            Mode.JUMP, Mode.FALL, Mode.DRAG -> "dangle"
+            Mode.LEAVE -> "idle"
+            Mode.DANCE -> if (restPose == Mode.SIT || restPose == Mode.LIE) pick("perch_music", "dance", "grin") else pick("dance", "grin")
+            Mode.SLEEP -> if (restPose == Mode.LIE) pick("laydown_sleep", "sleep") else "sleep"
+        }
+    }
+
+    // Une petite animation ponctuelle (clignement, glitch) dans sa posture du moment.
+    private fun oneShot(kind: String) {
+        val glitchy = Random.nextInt(5) == 0
+        view.play(
+            when (mode) {
+                Mode.SIT -> if (kind == "glitch") pick("perch_glitch", "glitch") else if (glitchy) pick("perch_blink_glitch", "perch_blink", "blink") else pick("perch_blink", "blink")
+                Mode.LIE -> if (kind == "glitch") pick("laydown_glitch", "glitch") else if (glitchy) pick("laydown_blink_glitch", "laydown_blink", "blink") else pick("laydown_blink", "blink")
+                else -> if (kind == "glitch") "glitch" else if (kind == "grin") "grin" else if (glitchy) pick("blink_glitch", "blink") else "blink"
+            }
+        )
     }
 
     private fun touched() {
@@ -298,37 +345,43 @@ class CapriService : Service() {
                 setMode(Mode.STAND)
                 if (sprites.has("arrive")) view.play("arrive")
                 place()
+                nextMove = System.currentTimeMillis() + 4000
             }
             else -> {}
         }
-        if (view.finished()) view.play(
-            when (mode) {
-                Mode.SIT -> if (sprites.has("perch")) "perch" else "idle"
-                Mode.SLEEP -> "sleep"
-                Mode.DANCE -> if (sprites.has("dance")) "dance" else "grin"
-                else -> "idle"
-            }
-        )
         if (bubble != null && now > bubbleUntil && !thinking) hideBubble()
+        // Fin d'une animation ponctuelle, ou elle commence / arrête de parler : retour à sa boucle.
+        val loop = sprites.clips[view.clipName]?.loop ?: true
+        if (mode != Mode.LEAVE && ((!loop && view.finished()) || (loop && view.clipName != loopClip()))) {
+            val before = pose()
+            view.play(loopClip())
+            if (pose() != before) place()
+        }
+        view.talking = bubble != null && (mode == Mode.STAND || mode == Mode.HOVER)
+        if (now >= nextBlink && (mode == Mode.STAND || mode == Mode.SIT || mode == Mode.LIE) && sprites.clips[view.clipName]?.loop == true) {
+            nextBlink = now + 3000 + Random.nextLong(4000)
+            oneShot("blink")
+        }
+        if (mode == Mode.LIE && now > lieUntil && bubble == null) setMode(if (sprites.has("perch")) Mode.SIT else Mode.STAND)
 
         // Toutes les 300 ms : son rebord existe-t-il encore ? de la musique ? une nouvelle appli ?
         if (now >= nextCheck) {
             nextCheck = now + 300
             val on = ledge
-            if ((mode == Mode.STAND || mode == Mode.WALK || mode == Mode.SIT || mode == Mode.DANCE) && on != null && !stillThere(on)) {
+            if ((mode == Mode.STAND || mode == Mode.WALK || mode == Mode.SIT || mode == Mode.LIE || mode == Mode.DANCE || mode == Mode.SLEEP) && on != null && !stillThere(on)) {
                 ledge = null
                 fallSpeed = 0f
                 setMode(Mode.FALL)
             }
             val music = try { audio.isMusicActive } catch (e: Exception) { false }
-            if (music && (mode == Mode.STAND || mode == Mode.SIT) && sprites.has("dance")) setMode(Mode.DANCE)
-            if (!music && mode == Mode.DANCE) setMode(Mode.STAND)
+            if (music && (mode == Mode.STAND || mode == Mode.SIT || mode == Mode.LIE) && (sprites.has("dance") || sprites.has("perch_music"))) setMode(Mode.DANCE)
+            if (!music && mode == Mode.DANCE) setMode(restPose)
             react(now)
         }
 
-        if (mode != Mode.SLEEP && now - lastTouch > 10 * 60_000L && (mode == Mode.STAND || mode == Mode.SIT)) { setMode(Mode.SLEEP); return }
+        if (mode != Mode.SLEEP && now - lastTouch > 10 * 60_000L && (mode == Mode.STAND || mode == Mode.SIT || mode == Mode.LIE)) { setMode(Mode.SLEEP); return }
         if (mode == Mode.SLEEP) return
-        if (now >= nextMove && (mode == Mode.STAND || mode == Mode.SIT)) {
+        if (now >= nextMove && (mode == Mode.STAND || mode == Mode.SIT || (mode == Mode.LIE && now > lieUntil))) {
             nextMove = now + 6_000L + Random.nextLong(9_000L)
             decide(now, w, h)
         }
@@ -354,9 +407,15 @@ class CapriService : Service() {
         val on = ledge
         val left = (on?.left?.toFloat() ?: 0f) + w * 0.35f
         val right = (on?.right?.toFloat() ?: widthPx.toFloat()) - w * 0.35f
+        val lieRoom = on != null && on.right - on.left >= h * 1.1f
+        if (mode == Mode.SIT && now - sitSince > 20_000 && lieRoom && sprites.has("laydown") && Random.nextDouble() < 0.4) {
+            lieUntil = now + 60_000L + Random.nextLong(120_000L)
+            setMode(Mode.LIE)
+            return
+        }
         when {
             roll < 0.28 && right - left > w * 0.5f -> {
-                if (mode == Mode.SIT) setMode(Mode.STAND)
+                if (mode == Mode.SIT || mode == Mode.LIE) setMode(Mode.STAND)
                 walkTo = left + Random.nextFloat() * (right - left)
                 setMode(Mode.WALK)
             }
@@ -364,8 +423,8 @@ class CapriService : Service() {
             roll < 0.68 -> glide()
             roll < 0.76 -> setMode(Mode.LEAVE)
             roll < 0.88 && mode == Mode.STAND && sprites.has("perch") -> setMode(Mode.SIT)
-            roll < 0.94 -> view.play("grin")
-            else -> view.play(if (Random.nextBoolean()) "glitch" else "blink")
+            roll < 0.94 -> if (mode == Mode.STAND) oneShot("grin") else oneShot("glitch")
+            else -> oneShot(if (Random.nextBoolean()) "glitch" else "blink")
         }
     }
 
@@ -402,7 +461,7 @@ class CapriService : Service() {
     }
 
     private fun jump(spot: Pair<Float, Eyes.Ledge?>) {
-        if (mode == Mode.SIT) setMode(Mode.STAND)
+        if (mode == Mode.SIT || mode == Mode.LIE) setMode(Mode.STAND)
         fromX = footX; fromY = footY
         toX = spot.first
         toY = spot.second?.top?.toFloat() ?: floorY()
@@ -417,7 +476,7 @@ class CapriService : Service() {
     }
 
     private fun glide() {
-        if (mode == Mode.SIT) setMode(Mode.STAND)
+        if (mode == Mode.SIT || mode == Mode.LIE) setMode(Mode.STAND)
         val h = params.height
         fromX = footX; fromY = footY
         toX = params.width / 2f + Random.nextFloat() * (widthPx - params.width)
@@ -433,7 +492,9 @@ class CapriService : Service() {
         ledge = on
         footY = on?.top?.toFloat() ?: floorY()
         view.squash = 0.8f
-        setMode(if (on != null && !on.keyboard && sprites.has("perch") && Random.nextDouble() < 0.5) Mode.SIT else Mode.STAND)
+        val sit = on != null && !on.keyboard && sprites.has("perch") && Random.nextDouble() < 0.5
+        setMode(if (sit) Mode.SIT else Mode.STAND)
+        if (sit && sprites.has("perch_arrive")) view.play("perch_arrive")
         place()
     }
 
@@ -450,7 +511,7 @@ class CapriService : Service() {
     }
 
     private fun petted() {
-        view.play("grin")
+        if (mode == Mode.STAND) view.play("grin") else oneShot("blink")
         say(Lines.pick("pet"), 3500)
     }
 
@@ -499,6 +560,14 @@ class CapriService : Service() {
                     setStroke(dp(2), Color.rgb(58, 214, 235))
                     cornerRadius = dp(6).toFloat()
                 }
+            }
+            // Son visage (face.png, s'il est importé) à gauche de la bulle.
+            val face = if (sprites.has("face")) sprites.strip("face", keep = view.clipName) else null
+            if (face != null) {
+                val icon = android.graphics.drawable.BitmapDrawable(resources, face)
+                icon.setBounds(0, 0, dp(32), dp(32))
+                shown.setCompoundDrawables(icon, null, null, null)
+                shown.compoundDrawablePadding = dp(8)
             }
             val layout = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
